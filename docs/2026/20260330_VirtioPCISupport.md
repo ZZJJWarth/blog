@@ -304,3 +304,33 @@ gicv3负责MSI-X中断的部件为ITS，它的工作原理图如下：
 当PCI设备将EventID写入该寄存器时，PCI总线会将该PCI设备的DeviceID一并告知ITS，此时ITS就会同时获取DeviceID和EventID，通过查表得到中断号以及对应的CPUID，将中断注入到对应的CPU中。
 
 当然，由于本工作只是在hvisor中模拟Virtio-PCI设备，所以我们并不需要使用到ITS的物理硬件，或者说，hvisor应该负责模拟ITS的功能从而让MSI-X中断
+
+## Virtio-PCI设备在hvisor中的数据传输
+
+根据virtio协议的规定，数据面的传输主要是通过一个被称为Virtqueue的机制，它主要涉及三个内存区域：**avail area**，**used area**和**desc area**
+
+只要给出这三片可用的内存区域，加上告知通讯双方这个virtqueue的功能，数据就可以顺利传输
+
+如果需要了解Virtqueue的传输原理，可以参考下面的文章：
+
+<https://www.redhat.com/en/blog/virtqueues-and-virtio-ring-how-data-travels>
+
+本章节主要介绍在hvisor中如何在root linux、non root linux和hvisor三者之间使用共享内存为virtqueue提供这三块可用的内存区域
+
+### 这三个内存区域从哪里来
+
+根据Virtio协议的规定，virtqueue的三个内存区域都是由virtio驱动提供的
+而本工作的目的是hvisor向non root提供Virtio-PCI设备，所以这三个内存区域是non root内核的驱动提供的
+non root内核会在virtqueue初始化时分配一定的内存，这个内存是non root**认为自己拥有的物理内存**，也就是GPA（Guest Physical Address）
+
+此时这三块内存区域已经存在了，但是它只是non root可见，我们的目标应该是让root可见，建立起一个共享内存的桥梁
+
+那么下一步就应该是让hvisor知道这三个内存区域的GPA
+
+### non root如何让hvisor知道GPA
+
+前面我们提到了common configuration这个capabilities，其中有virtqueue的相关信息，其中就有`queue_driver`,`queue_device`和`queue_desc`的字段，它们就分别表示avail area，used area和desc area。
+
+当Guest将Virtqueue初始化之后，它会将三个区域的GPA写入这三个字段，所以hvisor可以通过common configuration中获取到这三个内存区域的GPA。hvisor可以通过stage-2页表将GPA转换为物理地址
+
+此时hvisor知道virtqueue三个内存区域的物理地址，它需要让root linux也建立起三个虚拟内存地址，让这三个虚拟内存地址对应着non root linux中
